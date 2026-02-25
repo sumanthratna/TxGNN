@@ -10,15 +10,16 @@ TxGNN is a graph neural network pre-trained on a comprehensive knowledge graph o
 
 ![TxGNN](fig/txgnn_fig1.png)
 
-### Installation 
+### Installation (Linux + CUDA 12.4)
 
 ```bash
-conda create --name txgnn_env python=3.8
-conda activate txgnn_env
-# Install PyTorch via https://pytorch.org/ with your CUDA versions
-conda install -c dglteam dgl-cuda{$CUDA_VERSION}==0.5.2 # checkout https://www.dgl.ai/pages/start.html for more info, as long as it is DGL 0.5.2
-pip install TxGNN
+python3 -m venv txgnn_env
+source txgnn_env/bin/activate
+python -m pip install --upgrade pip
+python -m pip install git+https://github.com/sumanthratna/TxGNN.git
 ```
+
+TxGNN now targets Python 3.11/3.12 on Linux x86_64 with CUDA 12.4, and installs `torch==2.4.0+cu124` and `dgl==2.4.0+cu124` automatically from their official wheel indexes.
 
 Note that if you want to use disease-area split, you should also install PyG following [this instruction](https://pytorch-geometric.readthedocs.io/en/latest/notes/installation.html) since some legacy data processing code uses PyG utility functions.
 
