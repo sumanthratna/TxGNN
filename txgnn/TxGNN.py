@@ -161,7 +161,19 @@ class TxGNN:
                 "During No-KG ablation, pretraining is infeasible because it is the same as finetuning..."
             )
 
-        self.G = self.G.to("cpu")
+        if self.device.type == "cuda":
+            try:
+                self.G = self.G.to(self.device)
+            except Exception as exc:
+                warnings.warn(
+                    "Could not move the pretraining graph to {} ({}). Falling back to CPU minibatch sampling.".format(
+                        self.device, exc
+                    )
+                )
+                self.G = self.G.to("cpu")
+        else:
+            self.G = self.G.to("cpu")
+
         print("Creating minibatch pretraining dataloader...")
         train_eid_dict = {
             etype: self.G.edges(form="eid", etype=etype)
@@ -188,9 +200,12 @@ class TxGNN:
 
         for epoch in range(n_epoch):
             for step, (_input_nodes, pos_g, neg_g, blocks) in enumerate(dataloader):
-                blocks = [i.to(self.device) for i in blocks]
-                pos_g = pos_g.to(self.device)
-                neg_g = neg_g.to(self.device)
+                if blocks[0].device != self.device:
+                    blocks = [i.to(self.device) for i in blocks]
+                if pos_g.device != self.device:
+                    pos_g = pos_g.to(self.device)
+                if neg_g.device != self.device:
+                    neg_g = neg_g.to(self.device)
                 pred_score_pos, pred_score_neg, pos_score, neg_score = (
                     self.model.forward_minibatch(
                         pos_g, neg_g, blocks, self.G, mode="train", pretrain_mode=True
@@ -200,11 +215,13 @@ class TxGNN:
                 scores = torch.cat((pos_score, neg_score)).reshape(
                     -1,
                 )
-                labels = [1] * len(pos_score) + [0] * len(neg_score)
-
-                loss = F.binary_cross_entropy(
-                    scores, torch.Tensor(labels).float().to(self.device)
+                labels = torch.cat(
+                    (torch.ones_like(pos_score), torch.zeros_like(neg_score))
+                ).reshape(
+                    -1,
                 )
+
+                loss = F.binary_cross_entropy(scores, labels)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -214,6 +231,7 @@ class TxGNN:
 
                 if step % train_print_per_n == 0:
                     # pretraining tracking...
+                    labels_np = labels.detach().cpu().numpy()
                     (
                         auroc_rel,
                         auprc_rel,
@@ -230,7 +248,7 @@ class TxGNN:
                         .detach()
                         .cpu()
                         .numpy(),
-                        labels,
+                        labels_np,
                         self.G,
                         True,
                     )
