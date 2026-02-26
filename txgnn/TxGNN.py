@@ -249,7 +249,8 @@ class TxGNN:
                         -1,
                     )
 
-                    loss = F.binary_cross_entropy(scores, labels)
+                with torch.cuda.amp.autocast(enabled=False):
+                    loss = F.binary_cross_entropy(scores.float(), labels.float())
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
