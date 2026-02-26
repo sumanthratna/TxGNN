@@ -706,22 +706,26 @@ class Full_Graph_NegSampler:
 
 
 def evaluate_graph_construct(df_valid, g, neg_sampler, k, device):
+    target_device = torch.device(device)
     out = {}
     df_in = df_valid[["x_idx", "relation", "y_idx"]]
     for etype in g.canonical_etypes:
-        try:
-            df_temp = df_in[df_in.relation == etype[1]]
-            src = torch.Tensor(df_temp.x_idx.values).to(device).to(dtype=torch.int64)
-            dst = torch.Tensor(df_temp.y_idx.values).to(device).to(dtype=torch.int64)
-            out.update({etype: (src, dst)})
-        except:
-            print(etype[1])
+        df_temp = df_in[df_in.relation == etype[1]]
+        src = torch.as_tensor(
+            df_temp["x_idx"].to_numpy(dtype=np.int64, copy=False), dtype=torch.int64
+        )
+        dst = torch.as_tensor(
+            df_temp["y_idx"].to_numpy(dtype=np.int64, copy=False), dtype=torch.int64
+        )
+        out[etype] = (src, dst)
 
     g_valid = dgl.heterograph(
         out, num_nodes_dict={ntype: g.number_of_nodes(ntype) for ntype in g.ntypes}
     )
+    if g_valid.device != target_device:
+        g_valid = g_valid.to(target_device)
 
-    ng = Full_Graph_NegSampler(g_valid, k, neg_sampler, device)
+    ng = Full_Graph_NegSampler(g_valid, k, neg_sampler, target_device)
     g_neg_valid = ng(g_valid)
     return g_valid, g_neg_valid
 
