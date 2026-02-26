@@ -154,6 +154,9 @@ class TxGNN:
         batch_size=1024,
         train_print_per_n=20,
         sweep_wandb=None,
+        num_workers=0,
+        neighbor_sampler_fanouts=None,
+        use_amp=False,
     ):
 
         if self.no_kg:
@@ -165,7 +168,7 @@ class TxGNN:
             try:
                 self.G = self.G.to(self.device)
             except Exception as exc:
-                warnings.warn(
+                print(
                     "Could not move the pretraining graph to {} ({}). Falling back to CPU minibatch sampling.".format(
                         self.device, exc
                     )
@@ -179,8 +182,22 @@ class TxGNN:
             etype: self.G.edges(form="eid", etype=etype)
             for etype in self.G.canonical_etypes
         }
+        if num_workers != 0 and self.G.device.type == "cuda":
+            print(
+                "Setting num_workers=0 because DGL GPU sampling requires a single worker process."
+            )
+            num_workers = 0
+        if neighbor_sampler_fanouts is None:
+            neighborhood_sampler = dgl.dataloading.MultiLayerFullNeighborSampler(2)
+        else:
+            if isinstance(neighbor_sampler_fanouts, int):
+                neighbor_sampler_fanouts = [neighbor_sampler_fanouts] * 2
+            neighborhood_sampler = dgl.dataloading.MultiLayerNeighborSampler(
+                neighbor_sampler_fanouts
+            )
+
         sampler = dgl.dataloading.as_edge_prediction_sampler(
-            dgl.dataloading.MultiLayerFullNeighborSampler(2),
+            neighborhood_sampler,
             negative_sampler=Minibatch_NegSampler(self.G, 1, "fix_dst"),
         )
 
@@ -188,13 +205,16 @@ class TxGNN:
             self.G,
             train_eid_dict,
             sampler,
+            device=self.device if self.device.type == "cuda" else None,
             batch_size=batch_size,
             shuffle=True,
             drop_last=False,
-            num_workers=0,
+            num_workers=num_workers,
         )
 
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate)
+        amp_enabled = use_amp and self.device.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
         print("Start pre-training with #param: %d" % (get_n_params(self.model)))
 
@@ -206,25 +226,34 @@ class TxGNN:
                     pos_g = pos_g.to(self.device)
                 if neg_g.device != self.device:
                     neg_g = neg_g.to(self.device)
-                pred_score_pos, pred_score_neg, pos_score, neg_score = (
-                    self.model.forward_minibatch(
-                        pos_g, neg_g, blocks, self.G, mode="train", pretrain_mode=True
+
+                optimizer.zero_grad(set_to_none=True)
+                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                    pred_score_pos, pred_score_neg, pos_score, neg_score = (
+                        self.model.forward_minibatch(
+                            pos_g,
+                            neg_g,
+                            blocks,
+                            self.G,
+                            mode="train",
+                            pretrain_mode=True,
+                        )
                     )
-                )
 
-                scores = torch.cat((pos_score, neg_score)).reshape(
-                    -1,
-                )
-                labels = torch.cat(
-                    (torch.ones_like(pos_score), torch.zeros_like(neg_score))
-                ).reshape(
-                    -1,
-                )
+                    scores = torch.cat((pos_score, neg_score)).reshape(
+                        -1,
+                    )
+                    labels = torch.cat(
+                        (torch.ones_like(pos_score), torch.zeros_like(neg_score))
+                    ).reshape(
+                        -1,
+                    )
 
-                loss = F.binary_cross_entropy(scores, labels)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                    loss = F.binary_cross_entropy(scores, labels)
+
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
                 if self.weight_bias_track:
                     self.wandb.log({"Pretraining Loss": loss})
