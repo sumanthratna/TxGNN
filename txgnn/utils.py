@@ -27,6 +27,20 @@ from random import choice
 from collections import Counter
 import requests
 from zipfile import ZipFile
+import random as _random
+
+
+def seed_everything(seed: int) -> None:
+    """Seed all RNG sources for full reproducibility."""
+    _random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    dgl.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.use_deterministic_algorithms(True)
 
 import warnings
 
@@ -35,6 +49,10 @@ warnings.filterwarnings("ignore")
 # device = torch.device("cuda:0")
 
 from .data_splits.datasplit import DataSplitter
+from .node_init import resolve_node_init_tensors
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_DISEASE_FILE_PATH = os.path.join(REPO_ROOT, "data", "disease_files")
 
 
 def dataverse_download(url, save_path):
@@ -600,7 +618,7 @@ def construct_negative_graph_each_etype(graph, k, etype, method, weights, device
         neg_dst = dst.repeat_interleave(k)
         try:
             neg_src = weights[etype].multinomial(len(neg_dst), replacement=True)
-        except:
+        except (RuntimeError, ValueError):
             neg_src = torch.Tensor([])
     elif (
         (method == "multinomial_dst")
@@ -610,7 +628,7 @@ def construct_negative_graph_each_etype(graph, k, etype, method, weights, device
         neg_src = src.repeat_interleave(k)
         try:
             neg_dst = weights[etype].multinomial(len(neg_src), replacement=True)
-        except:
+        except (RuntimeError, ValueError):
             neg_dst = torch.Tensor([])
     return {etype: (neg_src.to(device), neg_dst.to(device))}
 
@@ -628,15 +646,20 @@ def construct_negative_graph(graph, k, device):
 class Minibatch_NegSampler(object):
     def __init__(self, g, k, method):
         if method == "multinomial_dst":
-            self.weights = {
+            weights = {
                 etype: g.in_degrees(etype=etype).float() ** 0.75
                 for etype in g.canonical_etypes
             }
         elif method == "fix_dst":
-            self.weights = {
+            weights = {
                 etype: (g.in_degrees(etype=etype) > 0).float()
                 for etype in g.canonical_etypes
             }
+        else:
+            weights = {}
+        self.weights = {
+            etype: tensor.detach().to("cpu") for etype, tensor in weights.items()
+        }
         self.k = k
 
     def __call__(self, g, eids_dict):
@@ -644,7 +667,9 @@ class Minibatch_NegSampler(object):
         for etype, eids in eids_dict.items():
             src, _ = g.find_edges(eids, etype=etype)
             src = src.repeat_interleave(self.k)
-            dst = self.weights[etype].multinomial(len(src), replacement=True)
+            dst = self.weights[etype].multinomial(len(src), replacement=True).to(
+                src.device
+            )
             result_dict[etype] = (src, dst)
         return result_dict
 
@@ -652,37 +677,40 @@ class Minibatch_NegSampler(object):
 class Full_Graph_NegSampler:
     def __init__(self, g, k, method, device):
         if method == "multinomial_src":
-            self.weights = {
+            weights = {
                 etype: g.out_degrees(etype=etype).float() ** 0.75
                 for etype in g.canonical_etypes
             }
         elif method == "multinomial_dst":
-            self.weights = {
+            weights = {
                 etype: g.in_degrees(etype=etype).float() ** 0.75
                 for etype in g.canonical_etypes
             }
         elif method == "inverse_dst":
-            self.weights = {
+            weights = {
                 etype: -(g.in_degrees(etype=etype).float() ** 0.75)
                 for etype in g.canonical_etypes
             }
         elif method == "inverse_src":
-            self.weights = {
+            weights = {
                 etype: -(g.out_degrees(etype=etype).float() ** 0.75)
                 for etype in g.canonical_etypes
             }
         elif method == "fix_dst":
-            self.weights = {
+            weights = {
                 etype: (g.in_degrees(etype=etype) > 0).float()
                 for etype in g.canonical_etypes
             }
         elif method == "fix_src":
-            self.weights = {
+            weights = {
                 etype: (g.out_degrees(etype=etype) > 0).float()
                 for etype in g.canonical_etypes
             }
         else:
-            self.weights = {}
+            weights = {}
+        self.weights = {
+            etype: tensor.detach().to("cpu") for etype, tensor in weights.items()
+        }
 
         self.k = k
         self.method = method
@@ -1443,6 +1471,8 @@ def map_node_id_2_idx(x, id2idx):
 
 def process_disease_area_split(data_folder, df, df_test, split):
     disease_file_path = os.path.join(data_folder, "disease_files")
+    if not os.path.exists(os.path.join(disease_file_path, split + ".csv")):
+        disease_file_path = DEFAULT_DISEASE_FILE_PATH
     disease_list = pd.read_csv(os.path.join(disease_file_path, split + ".csv"))
 
     id2idx = dict(
@@ -1512,7 +1542,13 @@ def create_dgl_graph(df_train, df):
     return g
 
 
-def initialize_node_embedding(g, n_inp):
+def initialize_node_embedding(
+    g,
+    n_inp,
+    node_id_maps=None,
+    node_init_path=None,
+    node_init_strict=False,
+):
     # initialize embedding xavier uniform
     for ntype in g.ntypes:
         emb = nn.Parameter(
@@ -1520,6 +1556,34 @@ def initialize_node_embedding(g, n_inp):
         )
         nn.init.xavier_uniform_(emb)
         g.nodes[ntype].data["inp"] = emb
+
+    if node_init_path is not None:
+        if node_id_maps is None:
+            raise ValueError("node_id_maps is required when node_init_path is set.")
+        tensors, summary = resolve_node_init_tensors(
+            node_init_path=node_init_path,
+            node_id_maps=node_id_maps,
+            num_nodes_by_type={
+                ntype: g.number_of_nodes(ntype)
+                for ntype in g.ntypes
+            },
+            n_inp=n_inp,
+            strict=node_init_strict,
+        )
+        for ntype, tensor in tensors.items():
+            g.nodes[ntype].data["inp"] = nn.Parameter(
+                tensor, requires_grad=False
+            )
+        matched_text = ", ".join(
+            [
+                f"{ntype}: {stats['matched_rows']}/{stats['num_nodes']}"
+                for ntype, stats in summary.items()
+            ]
+        )
+        print(
+            f"Loaded external node initialization from {node_init_path} "
+            f"({matched_text})"
+        )
     return g
 
 

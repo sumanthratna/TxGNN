@@ -30,9 +30,6 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-torch.manual_seed(0)
-# device = torch.device("cuda:0")
-
 
 class TxGNN:
     def __init__(
@@ -56,6 +53,8 @@ class TxGNN:
         self.disease_eval_idx = data.disease_eval_idx
         self.split = data.split
         self.no_kg = data.no_kg
+        self.seed = getattr(data, "seed", 42)
+        self.node_id_maps = data.retrieve_node_id_maps()
 
         self.disease_rel_types = [
             "rev_contraindication",
@@ -96,14 +95,24 @@ class TxGNN:
         num_walks=200,
         walk_mode="bit",
         path_length=2,
+        node_init_path=None,
+        node_init_strict=False,
     ):
+
+        seed_everything(self.seed)
 
         if self.no_kg and proto:
             print("Ablation study on No-KG. No proto learning is used...")
             proto = False
 
         self.G = self.G.to("cpu")
-        self.G = initialize_node_embedding(self.G, n_inp)
+        self.G = initialize_node_embedding(
+            self.G,
+            n_inp,
+            node_id_maps=self.node_id_maps,
+            node_init_path=node_init_path,
+            node_init_strict=node_init_strict,
+        )
         self.g_valid_pos, self.g_valid_neg = evaluate_graph_construct(
             self.df_valid, self.G, "fix_dst", 1, self.device
         )
@@ -124,6 +133,8 @@ class TxGNN:
             "num_walks": num_walks,
             "walk_mode": walk_mode,
             "path_length": path_length,
+            "node_init_path": node_init_path,
+            "node_init_strict": node_init_strict,
         }
 
         self.model = HeteroRGCN(
@@ -158,6 +169,8 @@ class TxGNN:
         neighbor_sampler_fanouts=None,
         use_amp=False,
     ):
+
+        seed_everything(self.seed)
 
         if self.no_kg:
             raise ValueError(
@@ -201,6 +214,8 @@ class TxGNN:
             negative_sampler=Minibatch_NegSampler(self.G, 1, "fix_dst"),
         )
 
+        shuffle_generator = torch.Generator()
+        shuffle_generator.manual_seed(self.seed)
         dataloader = dgl.dataloading.DataLoader(
             self.G,
             train_eid_dict,
@@ -210,6 +225,7 @@ class TxGNN:
             shuffle=True,
             drop_last=False,
             num_workers=num_workers,
+            generator=shuffle_generator,
         )
 
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate)
@@ -334,6 +350,7 @@ class TxGNN:
         save_name=None,
     ):
 
+        seed_everything(self.seed)
         best_val_acc = 0
 
         self.G = self.G.to(self.device)
@@ -705,11 +722,16 @@ class TxGNN:
 
         return similar_diseases
 
-    def load_pretrained(self, path):
+    def load_pretrained(self, path, node_init_path=None, node_init_strict=None):
         ## load config file
 
         with open(os.path.join(path, "config.pkl"), "rb") as f:
             config = pickle.load(f)
+
+        if node_init_path is not None:
+            config["node_init_path"] = node_init_path
+        if node_init_strict is not None:
+            config["node_init_strict"] = node_init_strict
 
         self.model_initialize(**config)
         self.config = config
