@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
+import dgl
 from .do_obo_parser import OBOReader as DO_Reader
 import os
 dirname = os.path.dirname(__file__)
@@ -10,6 +11,12 @@ class DataSplitter:
     def __init__(self, kg_path=''): 
         self.kg, self.nodes, self.edges = self.load_kg(kg_path)
         self.edge_index = torch.LongTensor(self.edges.get(['x_index', 'y_index']).values.T)
+        self.num_nodes = int(self.nodes.node_index.max()) + 1
+        undirected_src = torch.cat([self.edge_index[0], self.edge_index[1]])
+        undirected_dst = torch.cat([self.edge_index[1], self.edge_index[0]])
+        self.neighborhood_graph = dgl.graph(
+            (undirected_src, undirected_dst), num_nodes=self.num_nodes
+        )
         self.doid2parent, self.doid2name, self.doid2children = self.load_do()
         self.mondo_xref = pd.read_csv(os.path.join(dirname, 'mondo_references.csv'))
         #self.grouped_diseases = pd.read_csv('kg_grouped_diseases.csv')
@@ -61,6 +68,22 @@ class DataSplitter:
         node_idx = self.get_nodes_for_doid(code)
         df = self.nodes.query('node_index in @node_idx')
         return df
+
+    def get_k_hop_edge_group(self, nodes, num_hops):
+        seed_nodes = torch.as_tensor(nodes, dtype=self.edge_index.dtype)
+        neighborhood, _ = dgl.khop_out_subgraph(
+            self.neighborhood_graph,
+            seed_nodes,
+            k=num_hops,
+            relabel_nodes=True,
+            store_ids=True,
+        )
+        subgraph_nodes = neighborhood.ndata[dgl.NID]
+        node_mask = torch.zeros(self.num_nodes, dtype=torch.bool)
+        node_mask[subgraph_nodes] = True
+        edge_mask = node_mask[self.edge_index[0]] & node_mask[self.edge_index[1]]
+        filtered_edge_index = self.edge_index[:, edge_mask]
+        return filtered_edge_index
     
     def get_one_hop_edge_group(self, nodes, mask_ratio = 0.1, add_drug_dis=True):
         if add_drug_dis: 
@@ -68,8 +91,7 @@ class DataSplitter:
             drug_dis_edges = x.get(['x_index','y_index']).values.T
             print('drug_dis_edges.shape: ', drug_dis_edges.shape)
     
-        from torch_geometric.utils import k_hop_subgraph
-        subgraph_nodes, filtered_edge_index, node_map, edge_mask = k_hop_subgraph(list(nodes), 1, self.edge_index) #one hop 
+        filtered_edge_index = self.get_k_hop_edge_group(nodes, 1)
         print('filtered_edge_index.shape: ', filtered_edge_index.shape)
         num_of_mask_edges = int(mask_ratio * filtered_edge_index.shape[1])
         print('num_of_mask_edges: ', num_of_mask_edges)
@@ -103,8 +125,7 @@ class DataSplitter:
         else: 
             num_random_edges = test_num_edges
             
-        from torch_geometric.utils import k_hop_subgraph
-        subgraph_nodes, filtered_edge_index, node_map, edge_mask = k_hop_subgraph(list(nodes), 2, self.edge_index) #one hop neighborhood
+        filtered_edge_index = self.get_k_hop_edge_group(nodes, 2)
         print('filtered_edge_index.shape: ', filtered_edge_index.shape)
         sample_idx = np.random.choice(filtered_edge_index.shape[1], num_random_edges, replace=False)
         print('num_random_edges: ', num_random_edges)
