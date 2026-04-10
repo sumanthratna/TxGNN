@@ -3,6 +3,7 @@ import math
 import argparse
 import copy
 import pickle
+from collections import OrderedDict
 from argparse import ArgumentParser
 
 import numpy as np
@@ -79,6 +80,15 @@ class TxGNN:
         else:
             self.wandb = None
         self.config = None
+
+    def _clone_state_dict_to_cpu(self, state_dict):
+        cpu_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            if torch.is_tensor(value):
+                cpu_state_dict[key] = value.detach().cpu().clone()
+            else:
+                cpu_state_dict[key] = copy.deepcopy(value)
+        return cpu_state_dict
 
     def model_initialize(
         self,
@@ -766,6 +776,7 @@ class TxGNN:
         no_base=False,
         gate_hidden_size=32,
     ):
+        seed_everything(self.seed)
 
         self.relation = relation
 
@@ -796,7 +807,6 @@ class TxGNN:
 
         if "graphmask_model" not in self.__dict__:
             self.graphmask_model = copy.deepcopy(self.best_model)
-            self.best_graphmask_model = copy.deepcopy(self.graphmask_model)
             ## add all the parameters for graphmask
             self.graphmask_model.add_graphmask_parameters(
                 self.G, gate_hidden_size=gate_hidden_size
@@ -806,6 +816,14 @@ class TxGNN:
 
         self.graphmask_model.eval()
         disable_all_gradients(self.graphmask_model)
+        self.best_graphmask_state_dict = self._clone_state_dict_to_cpu(
+            self.graphmask_model.state_dict()
+        )
+        restore_base_models = self.device.type == "cuda"
+        if restore_base_models:
+            self.model = self.model.to("cpu")
+            self.best_model = self.best_model.to("cpu")
+            torch.cuda.empty_cache()
 
         optimizer = torch.optim.Adam(
             self.graphmask_model.parameters(), lr=learning_rate
@@ -834,16 +852,17 @@ class TxGNN:
             for epoch in range(epochs_per_layer):
                 self.graphmask_model.train()
                 neg_graph = neg_sampler(self.G)
-                original_predictions_pos, original_predictions_neg, _, _ = (
-                    self.graphmask_model.graphmask_forward(
-                        self.G,
-                        self.G,
-                        neg_graph,
-                        graphmask_mode=False,
-                        only_relation=relation,
-                        no_base=no_base,
+                with torch.no_grad():
+                    original_predictions_pos, original_predictions_neg, _, _ = (
+                        self.graphmask_model.graphmask_forward(
+                            self.G,
+                            self.G,
+                            neg_graph,
+                            graphmask_mode=False,
+                            only_relation=relation,
+                            no_base=no_base,
+                        )
                     )
-                )
 
                 pos_score = torch.cat(
                     [original_predictions_pos[i] for i in etypes_train]
@@ -861,13 +880,13 @@ class TxGNN:
                     penalty,
                     num_masked,
                 ) = self.graphmask_model.graphmask_forward(
-                    self.G,
-                    self.G,
-                    neg_graph,
-                    graphmask_mode=True,
-                    only_relation=relation,
-                    no_base=no_base,
-                )
+                        self.G,
+                        self.G,
+                        neg_graph,
+                        graphmask_mode=True,
+                        only_relation=relation,
+                        no_base=no_base,
+                    )
                 pos_score = torch.cat(
                     [updated_predictions_pos[i] for i in etypes_train]
                 )
@@ -954,10 +973,20 @@ class TxGNN:
                     if loss_sum < best_loss_sum:
                         # takes the best checkpoint
                         best_loss_sum = loss_sum
-                        self.best_graphmask_model = copy.deepcopy(self.graphmask_model)
+                        self.best_graphmask_state_dict = (
+                            self._clone_state_dict_to_cpu(
+                                self.graphmask_model.state_dict()
+                            )
+                        )
+
+        self.graphmask_model.load_state_dict(self.best_graphmask_state_dict)
+        self.best_graphmask_model = self.graphmask_model
+        if restore_base_models:
+            self.model = self.model.to(self.device)
+            self.best_model = self.best_model.to(self.device)
 
         loss_sum, metrics = evaluate_graphmask(
-            self.best_graphmask_model,
+            self.graphmask_model,
             self.G,
             self.g_test_pos,
             self.g_test_neg,
@@ -988,7 +1017,9 @@ class TxGNN:
             pickle.dump(self.config, f)
 
         torch.save(
-            self.best_graphmask_model.state_dict(),
+            self.best_graphmask_state_dict
+            if "best_graphmask_state_dict" in self.__dict__
+            else self._clone_state_dict_to_cpu(self.graphmask_model.state_dict()),
             os.path.join(path, "graphmask_model.pt"),
         )
 
@@ -1009,7 +1040,6 @@ class TxGNN:
         self.config = config
         if "graphmask_model" not in self.__dict__:
             self.graphmask_model = copy.deepcopy(self.best_model)
-            self.best_graphmask_model = copy.deepcopy(self.graphmask_model)
             ## add all the parameters for graphmask
             self.graphmask_model.add_graphmask_parameters(
                 self.G, threshold, remove_key_parts, use_top_k, k, gate_hidden_size
@@ -1030,6 +1060,9 @@ class TxGNN:
 
         self.graphmask_model.load_state_dict(state_dict)
         self.graphmask_model = self.graphmask_model.to(self.device)
+        self.best_graphmask_state_dict = self._clone_state_dict_to_cpu(
+            self.graphmask_model.state_dict()
+        )
         self.best_graphmask_model = self.graphmask_model
 
     def retrieve_gates_scores_penalties(self, relation, no_base=False):
@@ -1117,7 +1150,13 @@ class TxGNN:
         return whole_graph, test_graph
 
     def retrieve_save_gates(self, path):
-        _, scores, _ = self.retrieve_gates_scores_penalties()
+        if "relation" not in self.__dict__:
+            raise ValueError(
+                "GraphMask relation is not set. Train GraphMask first or set "
+                "self.relation before retrieving gates."
+            )
+        whole_graph, _ = self.retrieve_gates_scores_penalties(self.relation)
+        scores = whole_graph[6]
 
         df_raw = pd.read_csv(os.path.join(self.data_folder, "kg.csv"))
         df = self.df
