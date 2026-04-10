@@ -49,7 +49,9 @@ TxGNN.model_initialize(n_hid = 100, # number of hidden dimensions
                       sim_measure = 'all_nodes_profile', # disease signature, choose from ['all_nodes_profile', 'protein_profile', 'protein_random_walk']
                       agg_measure = 'rarity', # how to aggregate sim disease emb with target disease emb, choose from ['rarity', 'avg']
                       num_walks = 200, # for protein_random_walk sim_measure, define number of sampled walks
-                      path_length = 2 # for protein_random_walk sim_measure, define path length
+                      path_length = 2, # for protein_random_walk sim_measure, define path length
+                      node_init_path = None, # optional external node initialization payload
+                      node_init_strict = False # require a full match for provided node types
                       )
 
 ```
@@ -58,6 +60,8 @@ Instead of initializing a new model, you can also load a saved model:
 
 ```python
 TxGNN.load_pretrained('./model_ckpt')
+# Override node_init_path if the saved config points at a moved payload:
+# TxGNN.load_pretrained('./model_ckpt', node_init_path='./primekgpp_node_init.pkl')
 ```
 
 We provide an example pre-trained model weight at [here](https://drive.google.com/file/d/1fxTFkjo2jvmz9k6vesDbCeucQjGRojLj/view).
@@ -132,8 +136,14 @@ Of course, you can save and load graphmask model as well via:
 ```python
 TxGNN.save_graphmask_model('./graphmask_model_ckpt')
 TxGNN.load_pretrained_graphmask('./graphmask_model_ckpt')
+TxGNN.load_pretrained_graphmask('./graphmask_model_ckpt',
+                                node_init_path='./moved_node_init.pkl')
 
 ```
+
+If the GraphMask checkpoint was trained with an external `node_init_path` and that
+payload moved, pass the new path to `load_pretrained_graphmask(...)` the same way
+you would for `load_pretrained(...)`.
 
 ### Splits
 

@@ -13,6 +13,8 @@ from .utils import preprocess_kg, create_split, process_disease_area_split, crea
 import warnings
 warnings.filterwarnings("ignore")
 
+from .node_init import build_node_id_maps
+
 
 class TxData:
     
@@ -141,3 +143,6 @@ class TxData:
                 'idx2id_disease': idx2id_disease,
                 'idx2id_drug': idx2id_drug
                }
+
+    def retrieve_node_id_maps(self):
+        return build_node_id_maps(self.df.copy())

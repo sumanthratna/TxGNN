@@ -1031,10 +1031,17 @@ class TxGNN:
         use_top_k=False,
         k=0.05,
         gate_hidden_size=32,
+        node_init_path=None,
+        node_init_strict=None,
     ):
         ## load config file
         with open(os.path.join(path, "config.pkl"), "rb") as f:
             config = pickle.load(f)
+
+        if node_init_path is not None:
+            config["node_init_path"] = node_init_path
+        if node_init_strict is not None:
+            config["node_init_strict"] = node_init_strict
 
         self.model_initialize(**config)
         self.config = config
