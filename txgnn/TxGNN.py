@@ -615,6 +615,12 @@ class TxGNN:
         torch.save(self.best_model.state_dict(), os.path.join(path, "model.pt"))
         # save_graphs(os.path.join(path, 'graph_dgl.bin', [self.G]))
 
+        node_embeddings = {
+            ntype: self.G.nodes[ntype].data["inp"].detach().cpu()
+            for ntype in self.G.ntypes
+        }
+        torch.save(node_embeddings, os.path.join(path, "node_embeddings.pt"))
+
     def predict(self, df):
         out = {}
         g = self.G
@@ -761,6 +767,17 @@ class TxGNN:
             state_dict = new_state_dict
 
         self.model.load_state_dict(state_dict)
+
+        node_emb_path = os.path.join(path, "node_embeddings.pt")
+        if os.path.exists(node_emb_path) and node_init_path is None:
+            saved_embs = torch.load(node_emb_path, map_location=torch.device("cpu"))
+            for ntype, emb_tensor in saved_embs.items():
+                if ntype in self.G.ntypes:
+                    self.G.nodes[ntype].data["inp"] = nn.Parameter(
+                        emb_tensor,
+                        requires_grad=self.G.nodes[ntype].data["inp"].requires_grad,
+                    )
+
         self.model = self.model.to(self.device)
         self.best_model = self.model
 
