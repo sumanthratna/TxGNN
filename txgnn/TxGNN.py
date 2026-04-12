@@ -768,8 +768,14 @@ class TxGNN:
 
         self.model.load_state_dict(state_dict)
 
+        # Restore node embeddings saved alongside the checkpoint.
+        # node_embeddings.pt is authoritative: it captures the exact
+        # embeddings used during training, including any rows that were
+        # xavier-initialized for nodes an external payload did not cover.
+        # It always takes precedence over node_init_path (which only
+        # matters for old checkpoints that lack this file).
         node_emb_path = os.path.join(path, "node_embeddings.pt")
-        if os.path.exists(node_emb_path) and node_init_path is None:
+        if os.path.exists(node_emb_path):
             saved_embs = torch.load(node_emb_path, map_location=torch.device("cpu"))
             for ntype, emb_tensor in saved_embs.items():
                 if ntype in self.G.ntypes:
