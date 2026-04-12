@@ -107,6 +107,7 @@ class TxGNN:
         path_length=2,
         node_init_path=None,
         node_init_strict=False,
+        trainable_embeddings=False,
     ):
 
         seed_everything(self.seed)
@@ -122,6 +123,7 @@ class TxGNN:
             node_id_maps=self.node_id_maps,
             node_init_path=node_init_path,
             node_init_strict=node_init_strict,
+            trainable=trainable_embeddings,
         )
         self.g_valid_pos, self.g_valid_neg = evaluate_graph_construct(
             self.df_valid, self.G, "fix_dst", 1, self.device
@@ -145,6 +147,7 @@ class TxGNN:
             "path_length": path_length,
             "node_init_path": node_init_path,
             "node_init_strict": node_init_strict,
+            "trainable_embeddings": trainable_embeddings,
         }
 
         self.model = HeteroRGCN(
@@ -167,6 +170,21 @@ class TxGNN:
             device=self.device,
         ).to(self.device)
         self.best_model = self.model
+
+    def _build_optimizer(self, learning_rate):
+        params = list(self.model.parameters())
+        if self.config.get("trainable_embeddings"):
+            emb_params = []
+            for ntype in self.G.ntypes:
+                inp = self.G.nodes[ntype].data["inp"]
+                if inp.requires_grad:
+                    emb_params.append(inp)
+            if emb_params:
+                return torch.optim.AdamW([
+                    {"params": params},
+                    {"params": emb_params, "lr": learning_rate * 0.1, "weight_decay": 1e-3},
+                ], lr=learning_rate)
+        return torch.optim.AdamW(params, lr=learning_rate)
 
     def pretrain(
         self,
@@ -238,7 +256,7 @@ class TxGNN:
             generator=shuffle_generator,
         )
 
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate)
+        optimizer = self._build_optimizer(learning_rate)
         amp_enabled = use_amp and self.device.type == "cuda"
         scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
@@ -367,7 +385,7 @@ class TxGNN:
         neg_sampler = Full_Graph_NegSampler(self.G, 1, "fix_dst", self.device)
         torch.nn.init.xavier_uniform_(self.model.w_rels)  # reinitialize decoder
 
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate)
+        optimizer = self._build_optimizer(learning_rate)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", 0.8)
 
         for epoch in range(n_epoch):
@@ -615,6 +633,12 @@ class TxGNN:
         torch.save(self.best_model.state_dict(), os.path.join(path, "model.pt"))
         # save_graphs(os.path.join(path, 'graph_dgl.bin', [self.G]))
 
+        if self.config.get("trainable_embeddings"):
+            emb_dict = {}
+            for ntype in self.G.ntypes:
+                emb_dict[ntype] = self.G.nodes[ntype].data["inp"].detach().cpu()
+            torch.save(emb_dict, os.path.join(path, "node_embeddings.pt"))
+
     def predict(self, df):
         out = {}
         g = self.G
@@ -763,6 +787,14 @@ class TxGNN:
         self.model.load_state_dict(state_dict)
         self.model = self.model.to(self.device)
         self.best_model = self.model
+
+        emb_path = os.path.join(path, "node_embeddings.pt")
+        if os.path.exists(emb_path):
+            emb_dict = torch.load(emb_path, map_location=torch.device("cpu"))
+            for ntype, emb in emb_dict.items():
+                self.G.nodes[ntype].data["inp"] = nn.Parameter(
+                    emb, requires_grad=self.config.get("trainable_embeddings", False)
+                )
 
     def train_graphmask(
         self,
@@ -1023,6 +1055,12 @@ class TxGNN:
             os.path.join(path, "graphmask_model.pt"),
         )
 
+        if self.config.get("trainable_embeddings"):
+            emb_dict = {}
+            for ntype in self.G.ntypes:
+                emb_dict[ntype] = self.G.nodes[ntype].data["inp"].detach().cpu()
+            torch.save(emb_dict, os.path.join(path, "node_embeddings.pt"))
+
     def load_pretrained_graphmask(
         self,
         path,
@@ -1071,6 +1109,14 @@ class TxGNN:
             self.graphmask_model.state_dict()
         )
         self.best_graphmask_model = self.graphmask_model
+
+        emb_path = os.path.join(path, "node_embeddings.pt")
+        if os.path.exists(emb_path):
+            emb_dict = torch.load(emb_path, map_location=torch.device("cpu"))
+            for ntype, emb in emb_dict.items():
+                self.G.nodes[ntype].data["inp"] = nn.Parameter(
+                    emb, requires_grad=self.config.get("trainable_embeddings", False)
+                )
 
     def retrieve_gates_scores_penalties(self, relation, no_base=False):
         self.g_test_pos, self.g_test_neg = evaluate_graph_construct(

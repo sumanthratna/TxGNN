@@ -1548,11 +1548,12 @@ def initialize_node_embedding(
     node_id_maps=None,
     node_init_path=None,
     node_init_strict=False,
+    trainable=False,
 ):
     # initialize embedding xavier uniform
     for ntype in g.ntypes:
         emb = nn.Parameter(
-            torch.Tensor(g.number_of_nodes(ntype), n_inp), requires_grad=False
+            torch.Tensor(g.number_of_nodes(ntype), n_inp), requires_grad=trainable
         )
         nn.init.xavier_uniform_(emb)
         g.nodes[ntype].data["inp"] = emb
@@ -1572,7 +1573,7 @@ def initialize_node_embedding(
         )
         for ntype, tensor in tensors.items():
             g.nodes[ntype].data["inp"] = nn.Parameter(
-                tensor, requires_grad=False
+                tensor, requires_grad=trainable
             )
         matched_text = ", ".join(
             [
