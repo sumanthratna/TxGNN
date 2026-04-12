@@ -178,6 +178,11 @@ class TxGNN:
             for ntype in self.G.ntypes:
                 inp = self.G.nodes[ntype].data["inp"]
                 if inp.requires_grad:
+                    # After .to(device), DGL tensors may become non-leaf.
+                    # Re-wrap as a leaf Parameter so the optimizer can track them.
+                    if not inp.is_leaf:
+                        inp = nn.Parameter(inp.detach().clone(), requires_grad=True)
+                        self.G.nodes[ntype].data["inp"] = inp
                     emb_params.append(inp)
             if emb_params:
                 return torch.optim.AdamW([
