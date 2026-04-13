@@ -615,6 +615,12 @@ class TxGNN:
         torch.save(self.best_model.state_dict(), os.path.join(path, "model.pt"))
         # save_graphs(os.path.join(path, 'graph_dgl.bin', [self.G]))
 
+        node_embeddings = {
+            ntype: self.G.nodes[ntype].data["inp"].detach().cpu()
+            for ntype in self.G.ntypes
+        }
+        torch.save(node_embeddings, os.path.join(path, "node_embeddings.pt"))
+
     def predict(self, df):
         out = {}
         g = self.G
@@ -761,6 +767,23 @@ class TxGNN:
             state_dict = new_state_dict
 
         self.model.load_state_dict(state_dict)
+
+        # Restore node embeddings saved alongside the checkpoint.
+        # node_embeddings.pt is authoritative: it captures the exact
+        # embeddings used during training, including any rows that were
+        # xavier-initialized for nodes an external payload did not cover.
+        # It always takes precedence over node_init_path (which only
+        # matters for old checkpoints that lack this file).
+        node_emb_path = os.path.join(path, "node_embeddings.pt")
+        if os.path.exists(node_emb_path):
+            saved_embs = torch.load(node_emb_path, map_location=torch.device("cpu"))
+            for ntype, emb_tensor in saved_embs.items():
+                if ntype in self.G.ntypes:
+                    self.G.nodes[ntype].data["inp"] = nn.Parameter(
+                        emb_tensor,
+                        requires_grad=self.G.nodes[ntype].data["inp"].requires_grad,
+                    )
+
         self.model = self.model.to(self.device)
         self.best_model = self.model
 
