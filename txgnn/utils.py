@@ -52,7 +52,7 @@ from .data_splits.datasplit import DataSplitter
 from .node_init import resolve_node_init_tensors
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DISEASE_FILE_PATH = os.path.join(REPO_ROOT, "data", "disease_files")
+DEFAULT_DISEASE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disease_files")
 
 
 def dataverse_download(url, save_path):
