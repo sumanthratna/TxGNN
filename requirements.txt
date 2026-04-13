@@ -1,5 +1,6 @@
 pandas==3.0.1
 numpy==2.4.2
+scipy==1.17.1
 tqdm
 matplotlib
 scikit-learn

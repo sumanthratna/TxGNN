@@ -39,6 +39,13 @@ setup(
         "Programming Language :: Python :: 3.12",
     ],
     packages=find_packages(exclude=["test"]),
+    package_data={
+        "txgnn": [
+            "data_splits/*.obo",
+            "data_splits/*.csv",
+            "disease_files/*.csv",
+        ],
+    },
     zip_safe=False,
     include_package_data=True,
     install_requires=requirements,
