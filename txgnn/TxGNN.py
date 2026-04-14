@@ -365,7 +365,13 @@ class TxGNN:
 
         self.G = self.G.to(self.device)
         neg_sampler = Full_Graph_NegSampler(self.G, 1, "fix_dst", self.device)
-        torch.nn.init.xavier_uniform_(self.model.w_rels)  # reinitialize decoder
+        # Reinitialize decoder with a fixed seed so the starting point is
+        # identical across training seeds (only the pretrained encoder varies).
+        with torch.random.fork_rng(
+            devices=[self.device] if self.device.type == "cuda" else []
+        ):
+            torch.manual_seed(0)
+            torch.nn.init.xavier_uniform_(self.model.w_rels)
 
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", 0.8)
