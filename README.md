@@ -60,7 +60,8 @@ Instead of initializing a new model, you can also load a saved model:
 
 ```python
 TxGNN.load_pretrained('./model_ckpt')
-# Override node_init_path if the saved config points at a moved payload:
+# For checkpoints predating node_embeddings.pt, supply node_init_path to
+# regenerate the input features (newer checkpoints restore them directly):
 # TxGNN.load_pretrained('./model_ckpt', node_init_path='./primekgpp_node_init.pkl')
 ```
 
